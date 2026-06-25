@@ -1,0 +1,1 @@
+“How can a production-oriented AI backend system transform invoices and contracts into reliable structured data by combining document parsing, multimodal extraction, validation rules, confidence scoring, and human review?”
