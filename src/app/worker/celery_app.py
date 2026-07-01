@@ -7,15 +7,16 @@ in this phase; this only establishes the integration point.
 
 from __future__ import annotations
 
-import os
-
 from celery import Celery
 
-broker_url = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
-result_backend = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+from app.core.config import get_settings
+
+settings = get_settings()
 
 celery_app = Celery(
     "document_intelligence",
-    broker=broker_url,
-    backend=result_backend,
+    broker=settings.redis_url,
+    backend=settings.redis_url,
 )
+celery_app.conf.task_default_queue = settings.worker_queue_name
+celery_app.conf.worker_concurrency = settings.worker_concurrency

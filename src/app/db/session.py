@@ -7,26 +7,26 @@ DB-free. No models or migrations are defined in this phase.
 
 from __future__ import annotations
 
-import os
 from functools import lru_cache
 
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.core.config import get_settings
+
 
 @lru_cache
 def get_engine() -> Engine:
     """Return a lazily-created SQLAlchemy engine.
 
-    Reads ``DATABASE_URL`` from the environment when first called. Not used by any
-    runtime code yet; wired up in a later phase alongside models and migrations.
+    Reads ``database_url`` from the central ``Settings`` module when first called.
+    Not used by any runtime code yet; wired up in a later phase alongside models
+    and migrations. Because settings are only read inside this function, importing
+    the module still does not construct settings or connect to a database.
     """
 
-    database_url = os.environ.get(
-        "DATABASE_URL",
-        "postgresql+psycopg://localhost:5432/document_intelligence",
-    )
+    database_url = get_settings().database_url
     return create_engine(database_url, future=True)
 
 

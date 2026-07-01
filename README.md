@@ -50,11 +50,36 @@ source .venv/bin/activate        # Windows: .venv\Scripts\activate
 # 2. Install runtime + development dependencies (editable)
 pip install -e ".[dev]"          # or: make install
 
-# 3. (Optional) Configure environment
+# 3. Create your local config (REQUIRED — see Configuration below)
 cp .env.example .env
 ```
 
 No machine-specific paths are required — all commands are relative to the repo root.
+
+## Configuration
+
+Configuration is centralized in [src/app/core/config.py](src/app/core/config.py)
+(`Settings`, pydantic-settings) and read by the API, the Celery worker seam, and the
+database seam. Values load from the environment / a local `.env` file.
+
+`DATABASE_URL` and `REDIS_URL` are **required** — the app fails fast at startup with a
+clear `pydantic.ValidationError` if they are missing. Creating a local `.env`
+(`cp .env.example .env`) is therefore a required setup step. The defaults in
+`.env.example` are credential-free localhost values suitable for local development;
+real secrets/credentials belong only in your untracked `.env` (already git-ignored).
+
+| Variable | Required | Default | Purpose |
+|---|---|---|---|
+| `APP_TITLE` | No | `Document Intelligence API` | FastAPI title / API metadata |
+| `APP_ENV` | No | `local` | Environment name (local/dev/prod) |
+| `DATABASE_URL` | **Yes** | — | SQLAlchemy database URL (DB seam) |
+| `REDIS_URL` | **Yes** | — | Redis broker/backend URL (Celery seam) |
+| `STORAGE_PATH` | No | `storage` | Local upload-storage path (seam) |
+| `WORKER_CONCURRENCY` | No | `1` | Celery worker concurrency (int, ≥ 1) |
+| `WORKER_QUEUE_NAME` | No | `document_intelligence` | Default Celery queue name |
+
+`APP_VERSION` also exists as a setting but defaults to the package version and is
+normally left unset.
 
 ## Verify the environment
 
