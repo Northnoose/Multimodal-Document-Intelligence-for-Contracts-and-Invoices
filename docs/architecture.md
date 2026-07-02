@@ -11,9 +11,10 @@ this phase only ships the application skeleton and a health endpoint.
 | `src/app/`    | Application package (installed, `src`-based layout).                     |
 | `tests/`      | Pytest suite.                                                            |
 | `docs/`       | Project documentation (this file).                                      |
-| `storage/`    | Local storage seam for uploaded documents. Contents are git-ignored.    |
-| `migrations/` | Future database migrations. Empty seam for now.                         |
-| `scripts/`    | Developer/operational scripts (e.g. `verify_env.py`).                   |
+| `storage/`    | Local document storage: `originals/`, `extracted/`, `exports/`. Contents git-ignored. |
+| `migrations/` | Alembic migration environment (`env.py`) and committed `versions/`.     |
+| `alembic.ini` | Alembic config; DB URL injected from `Settings` at runtime (blank here). |
+| `scripts/`    | Developer/operational scripts (`verify_env.py`, `check_db.py`).         |
 
 ## Application package (`src/app/`)
 
@@ -23,8 +24,16 @@ The package separates concerns so each future capability has a clear home:
   holds endpoint modules (currently `health.py`).
 - **`core/`** — Cross-cutting concerns. `config.py` provides typed settings via
   pydantic-settings.
-- **`db/`** — Database layer. `session.py` is a lazy SQLAlchemy 2.0 engine/session
-  seam; no models or migrations yet.
+- **`db/`** — Database layer. `session.py` provides a lazy SQLAlchemy 2.0
+  engine/session factory, a `get_db_session()` FastAPI dependency, and a
+  `check_database_connection()` probe — all of which connect only when called, never
+  at import or startup. `base.py` defines the declarative `Base` used as Alembic's
+  `target_metadata`. No table models exist yet.
+- **`storage/`** — Local document storage. `service.py` provides a configurable root
+  (`Settings.storage_path`), `ensure_storage_layout()` (auto-creates
+  `originals/`/`extracted/`/`exports/`), and safe-path helpers (`safe_filename`,
+  `resolve_within_storage`) that sanitise caller-supplied names and reject path
+  traversal. No filesystem work happens at import.
 - **`domain/`** — Business entities and rules (invoices, contracts, validation,
   confidence, review). Empty for now.
 - **`worker/`** — Asynchronous processing. `celery_app.py` defines a Celery app
@@ -43,8 +52,20 @@ of failing later on the first request.
 performs no database, Redis, or other external access, making it a reliable liveness
 probe.
 
+## Database migrations
+
+Alembic is configured at the repo root (`alembic.ini`) with `script_location =
+migrations`. `migrations/env.py` injects the database URL from `Settings`
+(`config.set_main_option("sqlalchemy.url", get_settings().database_url)`), so the URL
+is never committed and there is a single source of truth. `target_metadata =
+Base.metadata` prepares `--autogenerate` for later phases. A committed
+`0001_initial_empty` baseline revision exists; running migrations requires a
+reachable database, but importing the app does not run them.
+
 ## Out of scope (later phases)
 
 Document parsing, OCR, multimodal/LLM extraction, validation rules, confidence
-scoring, human review, export, DB models/migrations, auth, upload endpoints, and
-deployment are not implemented here.
+scoring, human review, export, DB table models, auth, upload endpoints, and
+deployment are not implemented here. (Database connectivity, Alembic scaffolding, and
+the local storage layout now exist as described above; only the concrete models,
+schema migrations, and upload/processing flows remain out of scope.)

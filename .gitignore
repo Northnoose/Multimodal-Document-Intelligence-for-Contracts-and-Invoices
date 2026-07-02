@@ -28,9 +28,18 @@ htmlcov/
 *.key
 secrets/
 
-# Uploaded documents & local storage (keep the seam dir, ignore its contents)
+# Uploaded documents & local storage (keep the layout dirs, ignore their contents)
 storage/*
 !storage/.gitkeep
+!storage/originals/
+!storage/extracted/
+!storage/exports/
+storage/originals/*
+storage/extracted/*
+storage/exports/*
+!storage/originals/.gitkeep
+!storage/extracted/.gitkeep
+!storage/exports/.gitkeep
 
 # Editor / OS
 .idea/

@@ -19,16 +19,20 @@ for the project problem and full description.
 ├── Makefile                # Developer commands (install, verify, test, run)
 ├── .python-version         # Supported Python version floor (3.11)
 ├── .env.example            # Configuration template (copy to .env)
+├── alembic.ini             # Alembic config (URL injected from Settings)
 ├── docs/architecture.md    # Structure & layer documentation
 ├── scripts/verify_env.py   # Environment verification
-├── storage/                # Uploaded-document storage seam (contents git-ignored)
-├── migrations/             # Database migrations seam (future)
+├── scripts/check_db.py     # Local DB connectivity check (make db-check)
+├── storage/                # Local document storage: originals/ extracted/ exports/
+├── migrations/             # Alembic migrations (env.py + versions/)
 ├── tests/                  # Pytest suite
 └── src/app/
     ├── main.py             # FastAPI entrypoint (create_app factory)
     ├── core/config.py      # Typed settings (pydantic-settings)
     ├── api/                # HTTP layer: router + routes/health.py
-    ├── db/session.py       # SQLAlchemy session seam (lazy, unused this phase)
+    ├── db/session.py       # SQLAlchemy session seam (lazy) + connectivity check
+    ├── db/base.py          # Declarative Base for models / Alembic autogenerate
+    ├── storage/service.py  # Storage layout + safe-path helpers
     ├── domain/             # Business entities & rules (future)
     └── worker/celery_app.py# Celery worker seam (future)
 ```
@@ -113,6 +117,57 @@ Returns HTTP `200` with:
 ```
 
 The endpoint performs no database or external access.
+
+## Database connectivity check
+
+Probe that the configured `DATABASE_URL` is reachable (issues a single `SELECT 1`):
+
+```bash
+make db-check                     # or: python scripts/check_db.py
+```
+
+Exits `0` on success and `1` on failure. Connection errors are logged with the
+password-hidden URL. This is the only step that needs a reachable PostgreSQL
+instance; the app itself never connects at import or startup, and `/health` stays
+DB-free.
+
+## Database migrations
+
+Migrations use [Alembic](https://alembic.sqlalchemy.org/). The database URL is taken
+from `Settings` (`DATABASE_URL`) via `migrations/env.py`, so it is never hardcoded in
+`alembic.ini`.
+
+```bash
+make migrate                                   # apply all migrations (upgrade head)
+make migrate-down                              # roll back one revision
+make migration-create NAME="add documents"     # create a new revision
+alembic history                                # inspect revisions
+alembic current                                # show the applied revision
+```
+
+An initial empty baseline revision (`0001_initial_empty`) is committed under
+`migrations/versions/`.
+
+## Local document storage
+
+Uploaded and derived files live under `STORAGE_PATH` (default `storage/`) in three
+subdirectories:
+
+```
+storage/
+├── originals/    # raw uploaded documents
+├── extracted/    # derived / extracted outputs
+└── exports/      # generated JSON / CSV exports
+```
+
+Create the layout (idempotent) with:
+
+```bash
+make storage-init
+```
+
+Contents are git-ignored; only the per-directory `.gitkeep` placeholders are tracked.
+Caller-supplied filenames are always sanitised and confined to the storage root.
 
 ## Tests
 

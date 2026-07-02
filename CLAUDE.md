@@ -9,13 +9,17 @@ not have to rediscover the same facts. Everything here is derived from inspectin
 repository at the current commit, not from assumptions about where the project is
 headed.
 
-> **Reality check (verified):** This repo is in a **backend foundation / skeleton
-> phase**. It ships a FastAPI app with a single `/health` endpoint plus empty "seam"
-> modules for the database, Celery worker, and domain layer. **No document parsing,
-> OCR, PDF handling, image processing, table extraction, ML/multimodal models,
-> validation, confidence scoring, human review, or export exist yet.** Do not
-> document or assume those capabilities — they are explicitly out of scope for this
-> phase (see [docs/architecture.md](docs/architecture.md) "Out of scope").
+> **Reality check (verified):** This repo is in a **backend foundation phase**. It
+> ships a FastAPI app with a single `/health` endpoint, a **working (but unwired)**
+> database connection layer (lazy engine, `get_db_session` dependency,
+> `check_database_connection` probe), **Alembic** migration scaffolding with an
+> initial empty revision, and a **local document-storage** layout
+> (`originals/`/`extracted/`/`exports/`) with safe-path helpers — plus empty "seam"
+> modules for the Celery worker and domain layer. **No document parsing, OCR, PDF
+> handling, image processing, table extraction, ML/multimodal models, validation,
+> confidence scoring, human review, or export exist yet.** Do not document or assume
+> those capabilities — they are explicitly out of scope for this phase (see
+> [docs/architecture.md](docs/architecture.md) "Out of scope").
 
 ## Important Rule for Future Claude Code Sessions
 
@@ -50,41 +54,54 @@ headed.
   with human review and JSON/CSV export. See [description.md](description.md) and
   [problemstilling.md](problemstilling.md) for the intended product vision.
 - **Project type:** Python backend service / API (FastAPI), structured as an
-  installable `src`-layout package (`document-intelligence`). Async processing
-  (Celery) and a database (SQLAlchemy/PostgreSQL) are scaffolded as seams but unused.
+  installable `src`-layout package (`document-intelligence`). A database
+  (SQLAlchemy/PostgreSQL + Alembic) and local storage exist as tested foundations but
+  are not yet wired into any request path; async processing (Celery) is still a seam.
 - **Key technologies (from [pyproject.toml](pyproject.toml)):** FastAPI, Uvicorn,
-  Pydantic v2, pydantic-settings, SQLAlchemy 2.0, psycopg 3, Redis, Celery. Dev:
-  pytest, httpx, ruff. Python **3.11+**.
+  Pydantic v2, pydantic-settings, SQLAlchemy 2.0, Alembic, psycopg 3, Redis, Celery.
+  Dev: pytest, httpx, ruff. Python **3.11+**.
 - **High-level architecture:** Layered package under `src/app/` — `api/` (HTTP),
-  `core/` (config), `db/` (session seam), `worker/` (Celery seam), `domain/` (empty
-  business-logic layer). A `create_app()` factory builds the FastAPI instance.
+  `core/` (config), `db/` (lazy session + connectivity + declarative `Base`),
+  `storage/` (local file layout + safe paths), `worker/` (Celery seam), `domain/`
+  (empty business-logic layer). Migrations live under `migrations/` (Alembic). A
+  `create_app()` factory builds the FastAPI instance.
 
 ## Repository Map
 
 | Path | Purpose | Notes for Claude Code |
 |---|---|---|
 | [pyproject.toml](pyproject.toml) | Package metadata, dependencies (runtime + `dev` extra), pytest & ruff config | Single source of dependency truth. No `requirements.txt`. `pythonpath=["src"]`, `testpaths=["tests"]`, ruff `line-length=100`. |
-| [Makefile](Makefile) | Developer commands: `install`, `verify`, `test`, `run`, `lint` | Primary command entrypoint. `run` target uses `app.main:app` (works because src is on the path via editable install). |
+| [Makefile](Makefile) | Developer commands: `install`, `verify`, `test`, `run`, `lint`, `db-check`, `migrate`, `migrate-down`, `migration-create`, `storage-init` | Primary command entrypoint. `run` target uses `app.main:app` (works because src is on the path via editable install). |
 | [.python-version](.python-version) | Python floor: `3.11` | Matches `requires-python>=3.11`. |
 | [.env.example](.env.example) | Config template (copy to `.env` — **required**) | Documents all settings. `DATABASE_URL`/`REDIS_URL` are **required** (no default); the rest have defaults. |
-| [.gitignore](.gitignore) | Ignores venvs, caches, secrets, `storage/*` contents | `storage/.gitkeep` is kept; `.env.example` is kept, real `.env` ignored. |
+| [.gitignore](.gitignore) | Ignores venvs, caches, secrets, `storage/**` contents | Keeps `storage/.gitkeep` + per-subdir `.gitkeep` (`originals`/`extracted`/`exports`); `.env.example` kept, real `.env` ignored. |
+| [alembic.ini](alembic.ini) | Alembic config (`script_location=migrations`, `prepend_sys_path=src`, `path_separator=os`) | `sqlalchemy.url` intentionally **blank** — the URL is injected from `Settings` in `migrations/env.py`. Never put credentials here. |
 | [README.md](README.md) | Human setup/run guide | Accurate and current; mirrors this file. |
 | [description.md](description.md) / [problemstilling.md](problemstilling.md) | Product vision & problem statement | Aspirational — describes features **not yet built**. |
 | [docs/architecture.md](docs/architecture.md) | Layer/seam documentation | Authoritative on intent vs. scope; lists out-of-scope features. |
-| [scripts/verify_env.py](scripts/verify_env.py) | Checks Python version + imports of all core deps | Run by `make verify` before pytest. Fails fast, non-zero on first missing dep. |
+| [scripts/verify_env.py](scripts/verify_env.py) | Checks Python version + imports of all core deps | Run by `make verify` before pytest. Fails fast, non-zero on first missing dep. `CORE_MODULES` now includes `alembic`. |
+| [scripts/check_db.py](scripts/check_db.py) | Local DB connectivity check (`make db-check`) | Standalone operator tool; **not** imported by the app. Calls `check_database_connection()`, exits `0`/`1`, hides credentials in logs. Needs a reachable Postgres. |
 | [src/app/main.py](src/app/main.py) | FastAPI entrypoint; `create_app()` factory + module-level `app` | App is built as `app.main:app`. Settings load eagerly here. |
 | [src/app/__init__.py](src/app/__init__.py) | Package init; defines `__version__ = "0.1.0"` | Single source of the version string used by config and health. |
 | [src/app/core/config.py](src/app/core/config.py) | `Settings` (pydantic-settings) + cached `get_settings()` | Reads `.env`; `extra="ignore"`. Central config for API, worker, and DB. Fields: `app_title`, `app_version`, `app_env`, **required** `database_url`/`redis_url`, `storage_path`, `worker_concurrency` (int, `ge=1`), `worker_queue_name`. Add new settings here. |
 | [src/app/api/router.py](src/app/api/router.py) | Aggregates feature routers into `api_router` | Mount new routers here (documents, extraction, review, export). |
 | [src/app/api/routes/health.py](src/app/api/routes/health.py) | `GET /health` route + `HealthResponse` model | Only implemented endpoint. Intentionally no DB/Redis access. |
-| [src/app/db/session.py](src/app/db/session.py) | Lazy SQLAlchemy 2.0 engine/sessionmaker seam | **Unused at runtime.** No models/migrations exist. Reads `database_url` from `get_settings()` (not `os.environ`) inside `get_engine()`, so import stays non-connecting; connects only when first called. |
+| [src/app/db/session.py](src/app/db/session.py) | Lazy SQLAlchemy 2.0 engine/sessionmaker + `get_db_session()` dependency + `check_database_connection()` | **Not wired into any route yet.** Reads `database_url` from `get_settings()` inside `get_engine()` (import stays non-connecting; connects only when first called). `get_engine()` uses `pool_pre_ping=True`. `check_database_connection()` runs `SELECT 1`, returns bool, logs failures with the **password-hidden** URL. |
+| [src/app/db/base.py](src/app/db/base.py) | Declarative `Base` (SQLAlchemy `DeclarativeBase`) | Single base for future models; `Base.metadata` is Alembic's `target_metadata`. No table models defined yet. |
+| [migrations/env.py](migrations/env.py) | Alembic runtime env | Injects the DB URL from `get_settings()` via `config.set_main_option(...)`; `target_metadata = Base.metadata`. Reads settings only when Alembic runs — never at app import. |
+| `migrations/versions/0001_initial_empty.py` | Initial empty baseline revision | `down_revision = None`, empty `upgrade`/`downgrade`. The committed base; `versions/.gitkeep` keeps the dir tracked. |
+| [src/app/storage/service.py](src/app/storage/service.py) | Local storage layout + safe-path helpers | `get_storage_root()` (from `Settings.storage_path`), `ensure_storage_layout()` (creates `originals`/`extracted`/`exports`, idempotent — the **only** dir-creating function), `safe_filename()` (basename + whitelist + UUID prefix), `resolve_within_storage()` (traversal-proof via `is_relative_to`). No filesystem work at import. |
+| [src/app/storage/__init__.py](src/app/storage/__init__.py) | Storage package public API | Re-exports the `service.py` helpers. |
 | [src/app/worker/celery_app.py](src/app/worker/celery_app.py) | Celery app against Redis broker/backend | **Seam only** — no tasks registered, no worker started. Sources `redis_url`, `worker_queue_name`, `worker_concurrency` from `get_settings()` at import (constructs `Settings`; does not connect to Redis). |
 | [src/app/domain/__init__.py](src/app/domain/__init__.py) | Business-entity layer | **Empty** placeholder for invoices/contracts/validation logic. |
 | [tests/conftest.py](tests/conftest.py) | `client` fixture + autouse `_required_config` fixture | Sets test `DATABASE_URL`/`REDIS_URL` (module-level `setdefault` before importing `app.main`, plus per-test `monkeypatch`) and clears the `get_settings` cache so the suite is hermetic and secret-free. Builds a fresh app per test via `create_app()`. |
 | [tests/test_health.py](tests/test_health.py) | Test for `/health` | Liveness test. |
 | [tests/test_config.py](tests/test_config.py) | Tests for `Settings` | Covers defaults, env overrides, missing-required `ValidationError`, and `worker_concurrency` constraint. |
-| [storage/](storage/) | Upload-storage seam; contents git-ignored | Only `.gitkeep` tracked. No upload code yet. |
-| [migrations/](migrations/) | DB migrations seam | Only `.gitkeep`. No migration tool configured. |
+| [tests/test_db_session.py](tests/test_db_session.py) | Tests for the DB session seam (ID 4.1) | sqlite in-memory + unreachable URL; covers engine URL, `get_db_session` yield/close, connectivity success/failure, and password-free failure logging. Clears the lazy caches per test. |
+| [tests/test_migrations.py](tests/test_migrations.py) | Tests for Alembic scaffolding (ID 4.2) | DB-free/static: config loads, `env.py` uses `get_settings`/`set_main_option`, single base revision `0001_initial_empty` with `down_revision is None`. |
+| [tests/test_storage.py](tests/test_storage.py) | Tests for storage layout (ID 6.1) | `tmp_path` + `STORAGE_PATH`; covers root, subdir creation/idempotency, filename sanitising, and traversal rejection. |
+| [storage/](storage/) | Local document storage; contents git-ignored | Subdirs `originals/`, `extracted/`, `exports/` each tracked via `.gitkeep`; created at runtime by `ensure_storage_layout()` / `make storage-init`. |
+| [migrations/](migrations/) | Alembic migration environment | `env.py`, `script.py.mako`, `versions/` (initial revision + `.gitkeep`). Committed; requires a reachable DB only to *run*. |
 | `src/document_intelligence.egg-info/` | Generated editable-install metadata | **Generated artifact** — do not hand-edit; regenerated by `pip install -e`. |
 
 ## Core Architecture and Data Flow
@@ -108,10 +125,20 @@ flowchart LR
 - **Output format:** JSON `{"status": "ok", "version": "0.1.0"}`, HTTP 200.
 - **Startup:** `create_app()` eagerly calls `get_settings()`, so a malformed
   environment fails fast at startup with a `pydantic.ValidationError`.
-- **Document/OCR/ML flow:** **None exists.** The `domain/`, `db/`, and `worker/`
-  layers are seams with no business logic. Any document-processing pipeline is
-  future work and would live primarily in `domain/` (logic), `worker/` (async
-  tasks), `db/` (persistence), and new `api/routes/` modules (endpoints).
+- **Database flow:** A working connection layer exists but is **not wired into any
+  route**. `get_db_session()` is a ready FastAPI dependency (`Depends(get_db_session)`);
+  `check_database_connection()` (via `make db-check`) is the only thing that connects,
+  and only when explicitly called. Nothing connects at import or app startup, and
+  `/health` stays DB-free.
+- **Storage flow:** `src/app/storage/` defines the `originals`/`extracted`/`exports`
+  layout under `STORAGE_PATH`. Directories are created only via
+  `ensure_storage_layout()` (or `make storage-init`), never at import. No upload
+  endpoint writes files yet.
+- **Document/OCR/ML flow:** **None exists.** The `domain/` and `worker/` layers are
+  seams with no business logic. Any document-processing pipeline is future work and
+  would live primarily in `domain/` (logic), `worker/` (async tasks), `db/`
+  (models/persistence on `Base`), `storage/` (files), and new `api/routes/` modules
+  (endpoints).
 
 ## Main Components
 
@@ -121,7 +148,9 @@ flowchart LR
 | `Settings` / `get_settings()` | [src/app/core/config.py](src/app/core/config.py) | Typed, cached app configuration for API, worker, and DB | Env vars / `.env` | `Settings` object | `database_url`/`redis_url` are **required** (missing → `ValidationError` at startup). `get_settings()` is `lru_cache`d — changing env at runtime won't re-read (call `cache_clear()` in tests). Add config fields here. `extra="ignore"` tolerates unknown env keys. |
 | `api_router` | [src/app/api/router.py](src/app/api/router.py) | Aggregate feature routers | Feature routers | Mounted `APIRouter` | This is the single place to wire new endpoint modules. |
 | `health()` / `HealthResponse` | [src/app/api/routes/health.py](src/app/api/routes/health.py) | Liveness probe | None | JSON status+version | Keep it dependency-free (no DB/Redis) so it stays a fast liveness check. |
-| `get_engine()` / `get_sessionmaker()` | [src/app/db/session.py](src/app/db/session.py) | Lazy DB engine/session factory | `get_settings().database_url` | SQLAlchemy `Engine` / `sessionmaker` | Lazy + `lru_cache`d so nothing connects at import. Reads the URL from `Settings`. Wire up only alongside real models/migrations. |
+| `get_engine()` / `get_sessionmaker()` | [src/app/db/session.py](src/app/db/session.py) | Lazy DB engine/session factory | `get_settings().database_url` | SQLAlchemy `Engine` / `sessionmaker` | Lazy + `lru_cache`d so nothing connects at import. Reads the URL from `Settings`. `pool_pre_ping=True`. In tests, clear both caches to pick up a new URL. |
+| `get_db_session()` / `check_database_connection()` | [src/app/db/session.py](src/app/db/session.py) | Request-scoped session dependency; connectivity probe | `get_sessionmaker()` / `get_engine()` | `Iterator[Session]` / `bool` | Both connect only when called. `get_db_session()` is unwired (no DB routes). `check_database_connection()` logs failures with the password-hidden URL. Don't import either into `main.py`/`health.py`. |
+| `storage.service` helpers | [src/app/storage/service.py](src/app/storage/service.py) | Storage root, layout creation, safe paths | `get_settings().storage_path`, caller filenames | `Path`s / sanitised names | Only `ensure_storage_layout()` creates directories. Always route caller names through `safe_filename()`/`resolve_within_storage()` — never build paths from raw input. |
 | `celery_app` | [src/app/worker/celery_app.py](src/app/worker/celery_app.py) | Celery app (Redis broker/backend) | `get_settings()` (`redis_url`, worker settings) | `Celery` instance | Broker/backend + `task_default_queue`/`worker_concurrency` come from `Settings`. No tasks yet. Add tasks + autodiscovery when async processing is needed. |
 | `verify_env` | [scripts/verify_env.py](scripts/verify_env.py) | Validate Python version + dep imports | Running interpreter | Console report; exit code | Keep `CORE_MODULES` in sync with `pyproject.toml` dependencies. |
 
@@ -141,11 +170,12 @@ Confirmed from [README.md](README.md), [Makefile](Makefile), [pyproject.toml](py
   `pydantic.ValidationError` if they are missing, so `.env` is now mandatory to run
   the app. All other settings have safe local defaults. (Tests supply the required
   values via the `conftest.py` autouse fixture, not a committed `.env`.)
-- **System packages / external tools:** None strictly required to run `/health`.
-  `psycopg[binary]`, `redis`, and `celery` are installed as dependencies but their
-  backing services (PostgreSQL, Redis) are **not** needed this phase because nothing
-  connects to them. `Needs verification:` no Dockerfile, docker-compose, or CI config
-  is present, so a Postgres/Redis runtime is not provisioned by the repo.
+- **System packages / external tools:** None required to run `/health` or the test
+  suite. `psycopg[binary]`, `redis`, and `celery` are installed as dependencies; a
+  reachable PostgreSQL is needed only to *run* `make db-check` / `make migrate` (the
+  app never connects at import or startup, and DB/storage tests use sqlite in-memory /
+  `tmp_path`). `Needs verification:` no Dockerfile, docker-compose, or CI config is
+  present, so a Postgres/Redis runtime is not provisioned by the repo.
 - **Models / APIs / API keys:** None. No ML model, LLM, OCR engine, or external API
   is referenced anywhere in the code.
 - **Environment variables (all read centrally via `Settings`):**
@@ -153,11 +183,13 @@ Confirmed from [README.md](README.md), [Makefile](Makefile), [pyproject.toml](py
   - `APP_ENV` (default `"local"`)
   - `APP_VERSION` (default `__version__`; normally left unset)
   - `DATABASE_URL` — **required** (no default). Read by `Settings`; used by
-    `db/session.py`'s `get_engine()` when first called (still non-connecting at import).
+    `db/session.py`'s `get_engine()` when first called (still non-connecting at import)
+    and by Alembic (`migrations/env.py`) when migrations run.
   - `REDIS_URL` — **required** (no default). Read by `Settings`; used by
     `worker/celery_app.py` at import (constructs `Settings`; no worker runs, no Redis
     connection).
-  - `STORAGE_PATH` (default `"storage"`) — local upload-storage seam path.
+  - `STORAGE_PATH` (default `"storage"`) — root for local document storage; holds
+    `originals/`, `extracted/`, `exports/` (created by `ensure_storage_layout()`).
   - `WORKER_CONCURRENCY` (default `1`, int `ge=1`) — applied to `celery_app.conf`.
   - `WORKER_QUEUE_NAME` (default `"document_intelligence"`) — applied to `celery_app.conf`.
 
@@ -183,6 +215,21 @@ Confirmed from [README.md](README.md), [Makefile](Makefile), [pyproject.toml](py
   ```bash
   make lint                         # ruff check src tests
   ```
+- **Database connectivity check (needs a reachable Postgres):**
+  ```bash
+  make db-check                     # or: python scripts/check_db.py  (exit 0/1)
+  ```
+- **Migrations (Alembic; URL from `DATABASE_URL`):**
+  ```bash
+  make migrate                      # alembic upgrade head
+  make migrate-down                 # alembic downgrade -1
+  make migration-create NAME="..."  # alembic revision -m "..."
+  alembic history                   # shows 0001_initial_empty
+  ```
+- **Storage layout:**
+  ```bash
+  make storage-init                 # create originals/extracted/exports under STORAGE_PATH
+  ```
 - **No CLI, notebook, demo, or worker entrypoint exists.** There is no command to
   upload or process a document because that functionality is not built.
 
@@ -192,16 +239,18 @@ Confirmed from [README.md](README.md), [Makefile](Makefile), [pyproject.toml](py
   `pythonpath=["src"]`, `testpaths=["tests"]`).
 - **Location:** [tests/](tests/) — `conftest.py` (TestClient `client` fixture +
   autouse `_required_config` fixture that injects test `DATABASE_URL`/`REDIS_URL`),
-  `test_health.py`, and `test_config.py`.
+  `test_health.py`, `test_config.py`, `test_db_session.py` (sqlite in-memory),
+  `test_migrations.py` (static/DB-free), and `test_storage.py` (`tmp_path`). The new
+  DB/storage suites clear the relevant `lru_cache`s per test.
 - **Run tests:**
   ```bash
   make test                         # or: pytest -q
   ```
 - **Validation workflow:** `make verify` first checks Python version and that all
   core deps import ([scripts/verify_env.py](scripts/verify_env.py)), then runs pytest.
-- **Coverage gaps:** Only `/health` and the `Settings` config are tested. There are
-  **no** document, OCR, PDF, image, model, validation, or export tests because those
-  features do not exist.
+- **Coverage gaps:** `/health`, `Settings`, the DB session seam, Alembic
+  scaffolding, and storage helpers are tested. There are **no** document, OCR, PDF,
+  image, model, validation, or export tests because those features do not exist.
   When adding features, add tests under `tests/` mirroring the `src/app/` structure
   (e.g. `tests/test_<feature>.py`), reusing the `client` fixture for endpoints.
 
@@ -221,8 +270,12 @@ Observed conventions (follow them for consistency):
     [src/app/core/config.py](src/app/core/config.py).
   - Business/domain logic (invoice/contract entities, validation, confidence,
     review) → [src/app/domain/](src/app/domain/) (currently empty).
-  - DB models/persistence → build on [src/app/db/session.py](src/app/db/session.py);
-    add a real migrations setup under [migrations/](migrations/).
+  - DB models/persistence → subclass `Base` in
+    [src/app/db/base.py](src/app/db/base.py), use the session via
+    `Depends(get_db_session)`, and add revisions with `make migration-create` under
+    [migrations/](migrations/).
+  - File storage → use `src/app/storage/` helpers (`resolve_within_storage`,
+    `ensure_storage_layout`); never build paths from raw caller input.
   - Async/background tasks → register on `celery_app` in
     [src/app/worker/celery_app.py](src/app/worker/celery_app.py).
 - **Where NOT to add code:** Don't put endpoint logic directly in `main.py`; don't
@@ -245,9 +298,15 @@ Observed conventions (follow them for consistency):
   problem statement ([problemstilling.md](problemstilling.md)) describe a full
   document-intelligence pipeline that is **entirely unimplemented**. Treat those as
   intent, not current behavior.
-- **Unused seams that can mislead:**
-  - [src/app/db/session.py](src/app/db/session.py) — no models, no migrations; will
-    attempt a real connection only if `get_engine()`/`get_sessionmaker()` is called.
+- **Foundations that exist but are not wired in:**
+  - [src/app/db/session.py](src/app/db/session.py) — `get_db_session()` /
+    `check_database_connection()` exist but no route uses them; they connect only when
+    called. No table models yet (`Base` in `db/base.py` is empty).
+  - [migrations/](migrations/) — Alembic is scaffolded with one empty revision;
+    running `make migrate` needs a reachable DB. `env.py` reads settings only when
+    Alembic runs.
+  - [src/app/storage/](src/app/storage/) — layout + safe-path helpers exist but no
+    upload endpoint writes files; directories are created only on demand.
   - [src/app/worker/celery_app.py](src/app/worker/celery_app.py) — defines a Celery
     app but registers no tasks and starts no worker; importing it now constructs
     `Settings` (so `DATABASE_URL`/`REDIS_URL` must be present) but does not connect to
@@ -257,8 +316,12 @@ Observed conventions (follow them for consistency):
   required by `Settings`; a missing value fails fast at startup with a clear
   `pydantic.ValidationError`. `.env.example` ships credential-free localhost values as
   documented local defaults; set real URLs per environment in the untracked `.env`.
-- **Cached settings:** `get_settings()` and the `db` factories are `lru_cache`d —
-  environment changes within a running process are not picked up.
+- **Cached settings:** `get_settings()`, `get_engine()`, and `get_sessionmaker()` are
+  `lru_cache`d — environment changes within a running process are not picked up. New
+  DB/storage tests clear these caches per test; do the same when overriding config.
+- **Migrations require a reachable DB to *run*:** `make migrate`/`make db-check` need
+  a live PostgreSQL; the URL comes from `DATABASE_URL` (never `alembic.ini`). Importing
+  the app still runs no migrations and opens no connection.
 - **No CI / containerization:** `Needs verification:` no Dockerfile,
   docker-compose, or CI workflow exists; environment provisioning is manual.
 - **`.pytest_cache/` is committed in the working tree** but git-ignored — it is a
@@ -277,6 +340,8 @@ Observed conventions (follow them for consistency):
   - Run API: `make run` (`uvicorn app.main:app --reload`)
   - Tests: `make test` (`pytest -q`)
   - Lint: `make lint` (`ruff check src tests`)
+  - DB check: `make db-check` · Migrate: `make migrate` /
+    `make migration-create NAME="..."` · Storage: `make storage-init`
 - **Common edit locations:** new endpoint → `src/app/api/routes/` + register in
   `api/router.py`; new setting → `core/config.py`; domain logic → `domain/`.
 - **Debugging locations:** startup/config failures → `core/config.py` +

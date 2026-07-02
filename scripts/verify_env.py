@@ -19,6 +19,7 @@ CORE_MODULES: list[tuple[str, str]] = [
     ("pydantic", "Pydantic"),
     ("pydantic_settings", "Pydantic Settings"),
     ("sqlalchemy", "SQLAlchemy"),
+    ("alembic", "Alembic"),
     ("psycopg", "psycopg (PostgreSQL driver)"),
     ("redis", "redis"),
     ("celery", "Celery"),
