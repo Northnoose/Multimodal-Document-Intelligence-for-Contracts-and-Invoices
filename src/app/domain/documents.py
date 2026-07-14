@@ -34,6 +34,22 @@ class DocumentStatus(str, Enum):
     UPLOADED = "uploaded"
 
 
+class JobStatus(str, Enum):
+    """Lifecycle of the async processing job for a document (placeholder).
+
+    This is a *separate* concept from :class:`DocumentStatus`: the latter records the
+    document-metadata state (``uploaded``), while ``JobStatus`` describes the future
+    Celery-style processing job. No job persistence or real tracking exists yet — the
+    status endpoint always reports ``QUEUED``. The members define the contract that a
+    real async pipeline will later fill in.
+    """
+
+    QUEUED = "queued"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
 class DocumentResponse(BaseModel):
     """Serialised view of a stored document, returned by the upload endpoint."""
 
@@ -46,3 +62,12 @@ class DocumentResponse(BaseModel):
     status: DocumentStatus
     document_type: DocumentType
     upload_timestamp: datetime
+
+
+class JobStatusResponse(BaseModel):
+    """Processing-job status for a document, returned by the status endpoint."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    document_id: UUID
+    status: JobStatus

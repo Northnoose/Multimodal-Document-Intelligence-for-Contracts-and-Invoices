@@ -12,7 +12,9 @@ headed.
 > **Reality check (verified):** This repo is in a **backend foundation phase**. It
 > ships a FastAPI app with `/health` **and a first feature slice** —
 > `POST /documents/upload` (validate MIME → store original → persist metadata →
-> enqueue a placeholder Celery task → `201`). It has a **now-wired** database
+> enqueue a placeholder Celery task → `201`) plus a **placeholder**
+> `GET /documents/{document_id}/status` (looks the document up, 404 if missing, and
+> always returns job status `queued`). It has a **now-wired** database
 > connection layer (lazy engine, `get_db_session` dependency used by the upload
 > route, `check_database_connection` probe), a `Document` ORM model + **Alembic**
 > revision `0002_add_documents`, a **local document-storage** layout
@@ -93,8 +95,8 @@ headed.
 | [src/app/core/config.py](src/app/core/config.py) | `Settings` (pydantic-settings) + cached `get_settings()` | Reads `.env`; `extra="ignore"`. Central config for API, worker, and DB. Fields: `app_title`, `app_version`, `app_env`, **required** `database_url`/`redis_url`, `storage_path`, `worker_concurrency` (int, `ge=1`), `worker_queue_name`. Add new settings here. |
 | [src/app/api/router.py](src/app/api/router.py) | Aggregates feature routers into `api_router` | Includes `health` and `documents`. Mount new routers here (extraction, review, export). |
 | [src/app/api/routes/health.py](src/app/api/routes/health.py) | `GET /health` route + `HealthResponse` model | Liveness endpoint. Intentionally no DB/Redis access. |
-| [src/app/api/routes/documents.py](src/app/api/routes/documents.py) | `POST /documents/upload` route + `ALLOWED_CONTENT_TYPES` | Validate MIME → store original → persist `Document` → enqueue → `201 DocumentResponse`. Uses `Depends(get_db_session)`, storage helpers, `enqueue_document_processing`. No parsing/OCR; `document_type` hard-set to `unknown`. |
-| [src/app/domain/documents.py](src/app/domain/documents.py) | `DocumentType`/`DocumentStatus` enums + `DocumentResponse` (Pydantic) | DB-free domain types. `str, Enum` values; `DocumentResponse` has `from_attributes=True`. |
+| [src/app/api/routes/documents.py](src/app/api/routes/documents.py) | `POST /documents/upload` + `GET /documents/{document_id}/status` routes + `ALLOWED_CONTENT_TYPES` | Upload: validate MIME → store original → persist `Document` → enqueue → `201 DocumentResponse`. Status: `session.get(Document, id)` (404 if missing) → placeholder `JobStatusResponse` (always `queued`). Uses `Depends(get_db_session)`, storage helpers, `enqueue_document_processing`. No parsing/OCR; `document_type` hard-set to `unknown`. |
+| [src/app/domain/documents.py](src/app/domain/documents.py) | `DocumentType`/`DocumentStatus`/`JobStatus` enums + `DocumentResponse`/`JobStatusResponse` (Pydantic) | DB-free domain types. `str, Enum` values; both responses have `from_attributes=True`. `JobStatus` (`queued`/`processing`/`completed`/`failed`) is a **placeholder** async-job lifecycle, distinct from `DocumentStatus` and **not persisted**. |
 | [src/app/db/models.py](src/app/db/models.py) | `Document` ORM model (`documents` table) | `Mapped`/`mapped_column` cols; `Uuid` PK (`uuid4`), `String` enum cols, tz-aware `upload_timestamp` (app-side default), `status` indexed. |
 | [src/app/worker/tasks.py](src/app/worker/tasks.py) | Placeholder Celery task `process_document` | No-op: logs START/COMPLETE, returns the id. Registered via `celery_app`'s `include`. |
 | [src/app/worker/enqueue.py](src/app/worker/enqueue.py) | `enqueue_document_processing()` helper | Best-effort `.delay()` wrapped in try/except (broker outage must not 500 an upload). Decouples the route from Celery. |
@@ -115,6 +117,8 @@ headed.
 | [tests/test_storage.py](tests/test_storage.py) | Tests for storage layout (ID 6.1) | `tmp_path` + `STORAGE_PATH`; covers root, subdir creation/idempotency, filename sanitising, and traversal rejection. |
 | [tests/test_documents.py](tests/test_documents.py) | Tests for model/schema/upload (IDs 5.1/5.2) | sqlite `StaticPool` + `get_db_session` override, `STORAGE_PATH=tmp_path`, monkeypatched enqueue spy. Covers `201` for PDF/text, `415`/`422`, unsafe filename, on-disk storage, and `DocumentResponse` from ORM. |
 | [tests/test_worker.py](tests/test_worker.py) | Tests for worker baseline (ID 7.1) | Celery eager mode + `caplog`: task returns id and logs START/COMPLETE; enqueue runs eagerly and swallows a simulated broker error. No real Redis. |
+| [tests/test_jobs.py](tests/test_jobs.py) | Tests for the job-status placeholder (ID 8.1) | `JobStatus` members/values + `JobStatusResponse` round-trip; endpoint via sqlite `get_db_session` override + `tmp_path` storage: `200 queued` for an uploaded doc, `404` unknown id, `422` malformed id. |
+| [.github/workflows/ci.yml](.github/workflows/ci.yml) | GitHub Actions CI (ID 23.1) | Runs on PRs + pushes to `main`. Single `test` job on `ubuntu-latest`/Python 3.11: checkout → setup-python → `pip install -e ".[dev]"` → `make verify` → `make lint`. No services/env; suite is offline. |
 | [storage/](storage/) | Local document storage; contents git-ignored | Subdirs `originals/`, `extracted/`, `exports/` each tracked via `.gitkeep`; created at runtime by `ensure_storage_layout()` / `make storage-init`. |
 | [migrations/](migrations/) | Alembic migration environment | `env.py`, `script.py.mako`, `versions/` (initial revision + `.gitkeep`). Committed; requires a reachable DB only to *run*. |
 | `src/document_intelligence.egg-info/` | Generated editable-install metadata | **Generated artifact** — do not hand-edit; regenerated by `pip install -e`. |
@@ -127,6 +131,7 @@ Current runtime flow is minimal — a single request path:
 flowchart LR
     Client -->|GET /health| Router[api_router]
     Client -->|POST /documents/upload| Router
+    Client -->|GET /documents/&#123;id&#125;/status| Router
     Router --> Health[routes/health.py]
     Router --> Docs[routes/documents.py]
     Health -->|200 status+version| Client
@@ -137,10 +142,12 @@ flowchart LR
 ```
 
 - **Input/entry:** HTTP requests to the FastAPI app (`app.main:app`), served by
-  Uvicorn. Routes: `GET /health` and `POST /documents/upload`.
+  Uvicorn. Routes: `GET /health`, `POST /documents/upload`, and
+  `GET /documents/{document_id}/status`.
 - **Processing:** `health()` reads cached settings and returns status + version (no
   external access). `upload_document()` validates MIME, stores the file, persists a
-  `Document`, and enqueues the placeholder task.
+  `Document`, and enqueues the placeholder task. `get_document_status()` looks the
+  `Document` up (404 if missing) and returns a placeholder `queued` job status.
 - **Output format:** `/health` → JSON `{"status": "ok", "version": "0.1.0"}`, HTTP
   200. `/documents/upload` → `DocumentResponse` JSON, HTTP 201.
 - **Startup:** `create_app()` eagerly calls `get_settings()`, so a malformed
@@ -178,8 +185,9 @@ flowchart LR
 | `api_router` | [src/app/api/router.py](src/app/api/router.py) | Aggregate feature routers | Feature routers | Mounted `APIRouter` | Includes `health` + `documents`. The single place to wire new endpoint modules. |
 | `health()` / `HealthResponse` | [src/app/api/routes/health.py](src/app/api/routes/health.py) | Liveness probe | None | JSON status+version | Keep it dependency-free (no DB/Redis) so it stays a fast liveness check. |
 | `upload_document()` | [src/app/api/routes/documents.py](src/app/api/routes/documents.py) | Store an upload + persist metadata + enqueue | `UploadFile`, DB session | `201 DocumentResponse` | Validate MIME → store → insert `Document` → enqueue. Never build paths from raw names (use storage helpers). Enqueue is best-effort; DB failure unlinks the file. |
+| `get_document_status()` | [src/app/api/routes/documents.py](src/app/api/routes/documents.py) | Report placeholder processing-job status | `document_id`, DB session | `JobStatusResponse` | `session.get(Document, id)` → `404` if missing, else always `queued`. Placeholder — no real tracking yet; rides the existing `/documents` router (no `api/router.py` change). |
 | `Document` | [src/app/db/models.py](src/app/db/models.py) | Document metadata table | — | ORM row | Subclass of `Base`. Enum cols are `String` (grow without migration). Add new persistence models here + a revision. |
-| `DocumentType` / `DocumentStatus` / `DocumentResponse` | [src/app/domain/documents.py](src/app/domain/documents.py) | Domain enums + response schema | — | Enum members / Pydantic model | DB-free. Grow enum members here; `DocumentResponse` uses `from_attributes=True`. |
+| `DocumentType` / `DocumentStatus` / `JobStatus` / `DocumentResponse` / `JobStatusResponse` | [src/app/domain/documents.py](src/app/domain/documents.py) | Domain enums + response schemas | — | Enum members / Pydantic models | DB-free. Grow enum members here; both responses use `from_attributes=True`. `JobStatus` is a non-persisted placeholder job lifecycle distinct from `DocumentStatus`. |
 | `process_document` / `enqueue_document_processing` | [src/app/worker/tasks.py](src/app/worker/tasks.py) · [src/app/worker/enqueue.py](src/app/worker/enqueue.py) | Placeholder task + best-effort enqueue | `document_id` | Logs / echoed id | Task is a no-op seam. Route calls the enqueue helper (not `.delay()` directly) so a broker outage can't 500 an upload. |
 | `get_engine()` / `get_sessionmaker()` | [src/app/db/session.py](src/app/db/session.py) | Lazy DB engine/session factory | `get_settings().database_url` | SQLAlchemy `Engine` / `sessionmaker` | Lazy + `lru_cache`d so nothing connects at import. Reads the URL from `Settings`. `pool_pre_ping=True`. In tests, clear both caches to pick up a new URL. |
 | `get_db_session()` / `check_database_connection()` | [src/app/db/session.py](src/app/db/session.py) | Request-scoped session dependency; connectivity probe | `get_sessionmaker()` / `get_engine()` | `Iterator[Session]` / `bool` | Both connect only when called. `get_db_session()` is unwired (no DB routes). `check_database_connection()` logs failures with the password-hidden URL. Don't import either into `main.py`/`health.py`. |
@@ -292,8 +300,9 @@ Confirmed from [README.md](README.md), [Makefile](Makefile), [pyproject.toml](py
   core deps import ([scripts/verify_env.py](scripts/verify_env.py)), then runs pytest.
 - **Coverage gaps:** `/health`, `Settings`, the DB session seam, Alembic
   scaffolding, storage helpers, the upload endpoint/model/schema
-  ([tests/test_documents.py](tests/test_documents.py)), and the worker baseline
-  ([tests/test_worker.py](tests/test_worker.py)) are tested. There are **no** OCR,
+  ([tests/test_documents.py](tests/test_documents.py)), the worker baseline
+  ([tests/test_worker.py](tests/test_worker.py)), and the job-status placeholder
+  ([tests/test_jobs.py](tests/test_jobs.py)) are tested. There are **no** OCR,
   PDF-parsing, image, model, validation, or export tests because those features do
   not exist.
   When adding features, add tests under `tests/` mirroring the `src/app/` structure
@@ -372,8 +381,11 @@ Observed conventions (follow them for consistency):
 - **Migrations require a reachable DB to *run*:** `make migrate`/`make db-check` need
   a live PostgreSQL; the URL comes from `DATABASE_URL` (never `alembic.ini`). Importing
   the app still runs no migrations and opens no connection.
-- **No CI / containerization:** `Needs verification:` no Dockerfile,
-  docker-compose, or CI workflow exists; environment provisioning is manual.
+- **CI present; no containerization:** a GitHub Actions workflow
+  ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs `make verify` + `make lint`
+  on PRs and pushes to `main` (single Python-3.11 job, no services — the suite is
+  offline). There is still **no** Dockerfile or docker-compose; local Postgres/Redis
+  provisioning is manual.
 - **`.pytest_cache/` is committed in the working tree** but git-ignored — it is a
   cache artifact; do not rely on or edit it.
 - **No OCR/PDF/ML fragility to worry about yet** — because none of that code exists.

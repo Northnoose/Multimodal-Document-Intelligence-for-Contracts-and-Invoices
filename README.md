@@ -47,6 +47,21 @@ See [docs/architecture.md](docs/architecture.md) for details.
 - Python **3.11+** (see [.python-version](.python-version))
 - `pip`
 
+### External services (PostgreSQL & Redis)
+
+Some commands need a running **PostgreSQL** and **Redis** that you must provide
+yourself — this repo ships **no** Docker or `docker-compose`, so start them via a
+native install or your own containers and point `DATABASE_URL` / `REDIS_URL` at them
+(see **Configuration**):
+
+- **PostgreSQL** — needed for `make migrate`, `make db-check`, and `POST /documents/upload`
+  (it persists a metadata row).
+- **Redis** — needed to run the Celery worker (`make worker`).
+
+Neither service is needed for `make verify` / `make test` (the suite runs fully
+offline against in-memory sqlite and eager Celery) or for `GET /health` (it performs
+no external access).
+
 ## Setup
 
 ```bash
@@ -152,6 +167,28 @@ OCR, parsing, extraction, validation, or classification happens yet —
 `document_type` is always `unknown`. Persisting a document requires a reachable
 database (the `documents` table must exist; see **Database migrations**).
 
+## Job status (placeholder)
+
+`GET /documents/{document_id}/status` returns the processing-job status for a stored
+document. It looks the document up (returning `404` if the id is unknown) and reports
+its job status:
+
+```bash
+curl -i http://127.0.0.1:8000/documents/3f1a7c9e-2b8d-4f6a-9c0e-1d2b3a4c5d6e/status
+```
+
+```json
+{
+  "document_id": "3f1a7c9e-2b8d-4f6a-9c0e-1d2b3a4c5d6e",
+  "status": "queued"
+}
+```
+
+This is a **placeholder**: no async processing exists yet, so the status is always
+`queued`. The `JobStatus` vocabulary (`queued`/`processing`/`completed`/`failed`)
+defines the contract a future Celery pipeline will fill in. An unknown id returns
+`404`; a malformed (non-UUID) id returns `422`.
+
 ## Process worker (Celery)
 
 Uploads enqueue a placeholder `process_document` task on the Celery app. Start a
@@ -220,3 +257,11 @@ Caller-supplied filenames are always sanitised and confined to the storage root.
 ```bash
 make test                         # or: pytest -q
 ```
+
+## Continuous integration
+
+A GitHub Actions workflow ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs
+on every pull request and on pushes to `main`. It installs the package (`.[dev]`),
+runs `make verify` (environment check + tests), and `make lint`. No PostgreSQL or
+Redis services are provisioned — the suite runs fully offline. Results are visible in
+the repository's **Actions** tab.

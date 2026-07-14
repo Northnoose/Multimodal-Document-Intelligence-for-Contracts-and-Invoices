@@ -10,13 +10,20 @@ recorded as ``unknown``.
 from __future__ import annotations
 
 import logging
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
 from app.db.models import Document
 from app.db.session import get_db_session
-from app.domain.documents import DocumentResponse, DocumentStatus, DocumentType
+from app.domain.documents import (
+    DocumentResponse,
+    DocumentStatus,
+    DocumentType,
+    JobStatus,
+    JobStatusResponse,
+)
 from app.storage.service import (
     ensure_storage_layout,
     get_storage_root,
@@ -81,3 +88,23 @@ async def upload_document(
     enqueue_document_processing(str(document.id))
 
     return DocumentResponse.model_validate(document)
+
+
+@router.get("/{document_id}/status", response_model=JobStatusResponse)
+def get_document_status(
+    document_id: UUID,
+    session: Session = Depends(get_db_session),
+) -> JobStatusResponse:
+    """Return the processing-job status for a document (placeholder).
+
+    Looks the ``Document`` up by id (``404`` if it does not exist) and reports the
+    job status. There is no real async tracking yet, so the status is always the
+    fixed placeholder ``queued``; when async processing lands, this return value is
+    replaced by a persisted/tracked status without changing the schema contract.
+    """
+
+    document = session.get(Document, document_id)
+    if document is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    return JobStatusResponse(document_id=document_id, status=JobStatus.QUEUED)
