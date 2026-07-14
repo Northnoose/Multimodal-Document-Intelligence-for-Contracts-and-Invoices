@@ -1,4 +1,4 @@
-.PHONY: help install verify test run lint db-check migrate migrate-down migration-create storage-init
+.PHONY: help install verify test run lint db-check migrate migrate-down migration-create storage-init worker
 
 help:
 	@echo "Available targets:"
@@ -12,6 +12,7 @@ help:
 	@echo "  migrate-down      Roll back one migration (alembic downgrade -1)"
 	@echo "  migration-create  Create a revision: make migration-create NAME=\"...\""
 	@echo "  storage-init      Create the local storage layout under STORAGE_PATH"
+	@echo "  worker            Start the Celery worker (needs a reachable Redis)"
 
 install:
 	pip install -e ".[dev]"
@@ -43,3 +44,6 @@ migration-create:
 
 storage-init:
 	python -c "from app.storage.service import ensure_storage_layout; ensure_storage_layout()"
+
+worker:
+	celery -A app.worker.celery_app worker --loglevel=info -Q document_intelligence

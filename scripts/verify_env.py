@@ -15,6 +15,7 @@ MIN_PYTHON = (3, 11)
 # (import name, human label) for each baseline dependency.
 CORE_MODULES: list[tuple[str, str]] = [
     ("fastapi", "FastAPI"),
+    ("multipart", "python-multipart"),
     ("uvicorn", "Uvicorn"),
     ("pydantic", "Pydantic"),
     ("pydantic_settings", "Pydantic Settings"),

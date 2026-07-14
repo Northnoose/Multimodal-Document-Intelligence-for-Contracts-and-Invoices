@@ -8,7 +8,9 @@ for the project problem and full description.
 
 > **Status — backend foundation phase.** This phase ships the repository skeleton,
 > a predictable local environment, baseline dependencies, the FastAPI entrypoint,
-> and a `/health` endpoint. Document parsing, OCR, AI extraction, validation,
+> a `/health` endpoint, and the first feature slice: a `POST /documents/upload`
+> endpoint that stores an uploaded file, persists minimal metadata, and enqueues a
+> placeholder Celery task. Document parsing, OCR, AI extraction, validation,
 > confidence scoring, review, and export are **not** implemented yet.
 
 ## Project structure
@@ -29,12 +31,13 @@ for the project problem and full description.
 └── src/app/
     ├── main.py             # FastAPI entrypoint (create_app factory)
     ├── core/config.py      # Typed settings (pydantic-settings)
-    ├── api/                # HTTP layer: router + routes/health.py
+    ├── api/                # HTTP layer: router + routes/health.py, routes/documents.py
     ├── db/session.py       # SQLAlchemy session seam (lazy) + connectivity check
     ├── db/base.py          # Declarative Base for models / Alembic autogenerate
+    ├── db/models.py        # ORM models (Document)
     ├── storage/service.py  # Storage layout + safe-path helpers
-    ├── domain/             # Business entities & rules (future)
-    └── worker/celery_app.py# Celery worker seam (future)
+    ├── domain/documents.py # Document enums + response schema (DB-free)
+    └── worker/             # Celery app + process_document task + enqueue helper
 ```
 
 See [docs/architecture.md](docs/architecture.md) for details.
@@ -118,6 +121,49 @@ Returns HTTP `200` with:
 
 The endpoint performs no database or external access.
 
+## Upload a document
+
+`POST /documents/upload` accepts a single multipart file field named `file`. It
+validates the content type (`application/pdf`, `image/png`, `image/jpeg`,
+`text/plain`), stores the original under `storage/originals/` with a sanitised,
+collision-proof filename, persists a metadata row (via the DB session), enqueues the
+placeholder `process_document` worker task (best-effort), and returns `201` with the
+created record:
+
+```bash
+curl -i -F "file=@invoice.pdf;type=application/pdf" \
+  http://127.0.0.1:8000/documents/upload
+```
+
+```json
+{
+  "id": "3f1a7c9e-2b8d-4f6a-9c0e-1d2b3a4c5d6e",
+  "original_filename": "invoice.pdf",
+  "content_type": "application/pdf",
+  "storage_path": "originals/9b1f…e2_invoice.pdf",
+  "status": "uploaded",
+  "document_type": "unknown",
+  "upload_timestamp": "2026-07-13T10:15:30.123456+00:00"
+}
+```
+
+An unsupported content type returns `415`; a missing `file` field returns `422`. No
+OCR, parsing, extraction, validation, or classification happens yet —
+`document_type` is always `unknown`. Persisting a document requires a reachable
+database (the `documents` table must exist; see **Database migrations**).
+
+## Process worker (Celery)
+
+Uploads enqueue a placeholder `process_document` task on the Celery app. Start a
+worker (requires a reachable Redis broker configured via `REDIS_URL`):
+
+```bash
+make worker   # celery -A app.worker.celery_app worker --loglevel=info -Q document_intelligence
+```
+
+The task performs no real work in this phase — it logs a START and COMPLETE line for
+the document id. A broker outage does not fail an upload (enqueueing is best-effort).
+
 ## Database connectivity check
 
 Probe that the configured `DATABASE_URL` is reachable (issues a single `SELECT 1`):
@@ -145,8 +191,8 @@ alembic history                                # inspect revisions
 alembic current                                # show the applied revision
 ```
 
-An initial empty baseline revision (`0001_initial_empty`) is committed under
-`migrations/versions/`.
+Committed revisions under `migrations/versions/`: `0001_initial_empty` (baseline) and
+`0002_add_documents` (creates the `documents` table).
 
 ## Local document storage
 

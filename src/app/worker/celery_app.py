@@ -17,6 +17,7 @@ celery_app = Celery(
     "document_intelligence",
     broker=settings.redis_url,
     backend=settings.redis_url,
+    include=["app.worker.tasks"],
 )
 celery_app.conf.task_default_queue = settings.worker_queue_name
 celery_app.conf.worker_concurrency = settings.worker_concurrency

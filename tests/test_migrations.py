@@ -36,3 +36,13 @@ def test_initial_revision_present() -> None:
     assert list(script.get_bases()) == ["0001_initial_empty"]
     revision = script.get_revision("0001_initial_empty")
     assert revision.down_revision is None
+
+
+def test_documents_revision_chain() -> None:
+    script = ScriptDirectory.from_config(_config())
+    revision = script.get_revision("0002_add_documents")
+    assert revision.down_revision == "0001_initial_empty"
+    # It is the single head of the linear revision chain.
+    assert [head.revision for head in script.get_revisions("heads")] == [
+        "0002_add_documents"
+    ]
